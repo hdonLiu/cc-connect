@@ -1,6 +1,6 @@
 //go:build integration && !windows
 
-package daxiangbridge
+package daxiang
 
 import (
 	"bytes"
@@ -79,7 +79,7 @@ func TestPlatform_RealUGCAgentToolsRoundTrip(t *testing.T) {
 	case err := <-unavailable:
 		t.Fatalf("platform became unavailable before ready: %v", err)
 	case <-time.After(30 * time.Second):
-		t.Fatal("timeout waiting for daxiangbridge platform ready")
+		t.Fatal("timeout waiting for daxiang platform ready")
 	}
 
 	sendResp := postBridgeTestMessage(t, baseURL, map[string]any{
@@ -107,8 +107,8 @@ func TestPlatform_RealUGCAgentToolsRoundTrip(t *testing.T) {
 		t.Fatal("timeout waiting for inbound bridge message")
 	}
 
-	if msg.Platform != "daxiangbridge" {
-		t.Fatalf("msg.Platform = %q, want daxiangbridge", msg.Platform)
+	if msg.Platform != "daxiang" {
+		t.Fatalf("msg.Platform = %q, want daxiang", msg.Platform)
 	}
 	if msg.Content != "hello from cc-connect integration" {
 		t.Fatalf("msg.Content = %q, want hello from cc-connect integration", msg.Content)

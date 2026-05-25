@@ -1,4 +1,4 @@
-package daxiangbridge
+package daxiang
 
 import (
 	"crypto/aes"
@@ -17,7 +17,7 @@ import (
 func generateCredential(clientID string, ts int64, hexSecret string) (string, error) {
 	key, err := hex.DecodeString(hexSecret)
 	if err != nil {
-		return "", fmt.Errorf("daxiangbridge: invalid secret: %w", err)
+		return "", fmt.Errorf("daxiang: invalid secret: %w", err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {

@@ -1,6 +1,6 @@
-# 大象 Bridge（daxiangbridge）接入指南
+# 大象（daxiang）接入指南
 
-本文档说明如何让 **cc-connect** 通过 `daxiangbridge` 平台接入已经部署好的大象 Bridge 服务。
+本文档说明如何让 **cc-connect** 通过 `daxiang` 平台接入已经部署好的大象 bridge 服务。
 
 > 这个平台不是直接连大象官方接口，而是 **cc-connect 作为 bridge client**，通过 WebSocket 连到上游 bridge 服务，再由上游服务把大象侧消息转成 bridge 协议消息。
 
@@ -20,7 +20,7 @@
 
 ## 工作方式
 
-`daxiangbridge` 平台启动后会做 4 件事：
+`daxiang` 平台启动后会做 4 件事：
 
 1. 主动连接配置里的 `ws_url`
 2. 发送 `client.register` 注册帧
@@ -35,10 +35,10 @@
 
 相关实现：
 
-- `platform/daxiangbridge/daxiangbridge.go`
-- `platform/daxiangbridge/client.go`
-- `platform/daxiangbridge/inbound.go`
-- `platform/daxiangbridge/outbound.go`
+- `platform/daxiang/daxiang.go`
+- `platform/daxiang/client.go`
+- `platform/daxiang/inbound.go`
+- `platform/daxiang/outbound.go`
 
 ---
 
@@ -81,7 +81,7 @@ work_dir = "/path/to/project"
 mode = "default"
 
 [[projects.platforms]]
-type = "daxiangbridge"
+type = "daxiang"
 
 [projects.platforms.options]
 ws_url = "ws://your-bridge-host/ws"
@@ -132,7 +132,7 @@ cc-connect
 go run ./cmd/cc-connect
 ```
 
-连接成功后，`daxiangbridge` 会：
+连接成功后，`daxiang` 会：
 
 - 建立 WebSocket 长连接
 - 自动注册
@@ -145,7 +145,7 @@ go run ./cmd/cc-connect
 - `minBackoff = 3s`
 - `maxBackoff = 60s`
 
-见 `platform/daxiangbridge/client.go:41`
+见 `platform/daxiang/client.go:41`
 
 ---
 
@@ -208,12 +208,12 @@ cc-connect 收到后会把：
 
 见：
 
-- `platform/daxiangbridge/inbound.go:21`
-- `platform/daxiangbridge/inbound.go:24`
+- `platform/daxiang/inbound.go:21`
+- `platform/daxiang/inbound.go:24`
 
 ### 2. 依赖上游 bridge 服务
 
-`daxiangbridge` 不是独立接大象，而是依赖上游 bridge 服务：
+`daxiang` 不是独立接大象，而是依赖上游 bridge 服务：
 
 - 注册鉴权
 - 会话分发
@@ -308,7 +308,7 @@ wscat -c ws://your-bridge-host/ws
 
 ## 相关文件
 
-- 平台实现：`platform/daxiangbridge/`
+- 平台实现：`platform/daxiang/`
 - 配置示例：`config.example.toml`
 - 通用 bridge 协议：`docs/bridge-protocol.md`
 - 中文协议文档：`docs/bridge-protocol.zh-CN.md`
@@ -331,7 +331,7 @@ work_dir = "/path/to/project"
 mode = "default"
 
 [[projects.platforms]]
-type = "daxiangbridge"
+type = "daxiang"
 
 [projects.platforms.options]
 ws_url = "ws://127.0.0.1:18180/ws"

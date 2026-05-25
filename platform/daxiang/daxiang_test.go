@@ -1,265 +1,333 @@
 package daxiang
 
 import (
-	"errors"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/gorilla/websocket"
 )
 
-func TestNew_RequiresMandatoryFields(t *testing.T) {
-	tests := []struct {
-		name string
-		opts map[string]any
-	}{
-		{
-			name: "missing app_id",
-			opts: map[string]any{
-				"app_secret":       "secret",
-				"bot_id":           float64(123456),
-				"audience":         "xm-xai",
-				"callback_addr":    ":9090",
-				"card_template_id": float64(1001),
-			},
-		},
-		{
-			name: "missing app_secret",
-			opts: map[string]any{
-				"app_id":           "cli_xxx",
-				"bot_id":           float64(123456),
-				"audience":         "xm-xai",
-				"callback_addr":    ":9090",
-				"card_template_id": float64(1001),
-			},
-		},
-		{
-			name: "missing bot_id",
-			opts: map[string]any{
-				"app_id":           "cli_xxx",
-				"app_secret":       "secret",
-				"audience":         "xm-xai",
-				"callback_addr":    ":9090",
-				"card_template_id": float64(1001),
-			},
-		},
-		{
-			name: "missing callback_addr",
-			opts: map[string]any{
-				"app_id":           "cli_xxx",
-				"app_secret":       "secret",
-				"bot_id":           float64(123456),
-				"audience":         "xm-xai",
-				"card_template_id": float64(1001),
-			},
-		},
-		{
-			name: "missing card_template_id",
-			opts: map[string]any{
-				"app_id":        "cli_xxx",
-				"app_secret":    "secret",
-				"bot_id":        float64(123456),
-				"audience":      "xm-xai",
-				"callback_addr": ":9090",
-			},
-		},
-	}
+type previewAgent struct{}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := New(tc.opts)
-			if err == nil {
-				t.Fatal("New() error = nil, want validation error")
+func (a *previewAgent) Name() string { return "preview-agent" }
+func (a *previewAgent) StartSession(_ context.Context, _ string) (core.AgentSession, error) {
+	return newPreviewAgentSession(), nil
+}
+func (a *previewAgent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
+	return nil, nil
+}
+func (a *previewAgent) Stop() error { return nil }
+
+type previewAgentSession struct {
+	events chan core.Event
+}
+
+func newPreviewAgentSession() *previewAgentSession {
+	return &previewAgentSession{events: make(chan core.Event, 4)}
+}
+
+func (s *previewAgentSession) Send(_ string, _ []core.ImageAttachment, _ []core.FileAttachment) error {
+	s.events <- core.Event{Type: core.EventText, Content: "bridge-ok"}
+	s.events <- core.Event{Type: core.EventResult, Content: "", Done: true}
+	return nil
+}
+func (s *previewAgentSession) RespondPermission(_ string, _ core.PermissionResult) error { return nil }
+func (s *previewAgentSession) Events() <-chan core.Event                                 { return s.events }
+func (s *previewAgentSession) CurrentSessionID() string                                  { return "preview-session" }
+func (s *previewAgentSession) Alive() bool                                               { return true }
+func (s *previewAgentSession) Close() error                                              { return nil }
+
+func waitForFrameType(t *testing.T, framesCh <-chan BridgeFrame, want map[string]bool, timeout time.Duration) BridgeFrame {
+	t.Helper()
+	deadline := time.After(timeout)
+	var seen []string
+	for {
+		select {
+		case frame := <-framesCh:
+			seen = append(seen, frame.Type)
+			if want[frame.Type] {
+				return frame
 			}
-		})
+		case <-deadline:
+			t.Fatalf("timeout waiting for frame, want=%v seen=%v", want, seen)
+		}
 	}
 }
 
-func TestNew_ImplementsStreamingCapabilities(t *testing.T) {
-	pAny, err := New(map[string]any{
-		"app_id":           "cli_xxx",
-		"app_secret":       "secret",
-		"bot_id":           float64(123456),
-		"audience":         "xm-xai",
-		"callback_addr":    ":9090",
-		"card_template_id": float64(1001),
+func payloadText(t *testing.T, frame BridgeFrame) string {
+	t.Helper()
+	var payload AgentReplyPayload
+	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return payload.Text
+}
+
+func startTestServer(t *testing.T, afterRegister func(*websocket.Conn), framesCh chan<- BridgeFrame) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read register: %v", err)
+			return
+		}
+		var frame BridgeFrame
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Errorf("unmarshal register: %v", err)
+			return
+		}
+		if frame.Type != FrameTypeClientRegister {
+			t.Errorf("expected register, got %q", frame.Type)
+			return
+		}
+
+		ack := BridgeFrame{Type: FrameTypeClientRegistered}
+		b, _ := json.Marshal(ack)
+		if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+			t.Errorf("write ack: %v", err)
+			return
+		}
+
+		if afterRegister != nil {
+			afterRegister(conn)
+		}
+
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var outbound BridgeFrame
+			if err := json.Unmarshal(raw, &outbound); err != nil {
+				t.Errorf("unmarshal outbound: %v", err)
+				return
+			}
+			framesCh <- outbound
+		}
+	}))
+}
+
+var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+func TestPlatform_ReceivesMessage(t *testing.T) {
+	received := make(chan *core.Message, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		defer conn.Close()
+
+		_, raw, _ := conn.ReadMessage()
+		var frame BridgeFrame
+		json.Unmarshal(raw, &frame)
+		if frame.Type != FrameTypeClientRegister {
+			t.Errorf("expected register, got %q", frame.Type)
+		}
+
+		ack := BridgeFrame{Type: FrameTypeClientRegistered}
+		b, _ := json.Marshal(ack)
+		if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+			t.Errorf("write ack: %v", err)
+			return
+		}
+
+		payload := BridgeEventPayload{
+			Platform: "daxiang", ChatType: "private",
+			ConversationID: "conv_1", MessageID: "msg_1",
+			FromUserID: "u_1", FromUserName: "张三", Text: "hello",
+		}
+		raw2, _ := json.Marshal(payload)
+		event := BridgeFrame{
+			Type: FrameTypeBridgeEventMessage, RequestID: "req_1",
+			SessionID: "sess_1", Payload: raw2,
+		}
+		b2, _ := json.Marshal(event)
+		if err := conn.WriteMessage(websocket.TextMessage, b2); err != nil {
+			t.Errorf("write event: %v", err)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	p, err := New(map[string]any{
+		"ws_url":        wsURL,
+		"client_id":     "test-client",
+		"client_secret": "0123456789abcdef0123456789abcdef",
+		"bot_id":        int64(123),
 	})
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatal(err)
 	}
-	if _, ok := pAny.(core.PreviewStarter); !ok {
-		t.Fatalf("platform type %T does not implement core.PreviewStarter", pAny)
-	}
-	if _, ok := pAny.(core.MessageUpdater); !ok {
-		t.Fatalf("platform type %T does not implement core.MessageUpdater", pAny)
+	p.Start(func(_ core.Platform, msg *core.Message) {
+		received <- msg
+	})
+	defer p.Stop()
+
+	select {
+	case msg := <-received:
+		if msg.Content != "hello" {
+			t.Errorf("content: got %q", msg.Content)
+		}
+		if msg.UserName != "张三" {
+			t.Errorf("userName: got %q", msg.UserName)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message")
 	}
 }
 
-func TestHandleCallbackEvent_IgnoresDuplicateMsgID(t *testing.T) {
-	p := &Platform{appID: "cli_xxx", botID: 123456}
-	calls := 0
-	p.handler = func(_ core.Platform, _ *core.Message) { calls++ }
+func TestPlatform_StreamPreviewFinalizeSendsTerminalFrame(t *testing.T) {
+	framesCh := make(chan BridgeFrame, 16)
+	msgSent := make(chan struct{}, 1)
+	srv := startTestServer(t, func(conn *websocket.Conn) {
+		payload := BridgeEventPayload{
+			Platform:       "daxiang",
+			ChatType:       "private",
+			ConversationID: "conv_1",
+			MessageID:      "msg_1",
+			FromUserID:     "u_1",
+			FromUserName:   "张三",
+			Text:           "hello",
+		}
+		raw, _ := json.Marshal(payload)
+		event := BridgeFrame{
+			Type:      FrameTypeBridgeEventMessage,
+			RequestID: "req_stream_1",
+			SessionID: "sess_stream_1",
+			Payload:   raw,
+		}
+		b, _ := json.Marshal(event)
+		if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+			t.Errorf("write event: %v", err)
+			return
+		}
+		msgSent <- struct{}{}
+	}, framesCh)
+	defer srv.Close()
 
-	evt := callbackEvent{
-		AppID:         "cli_xxx",
-		BotID:         123456,
-		EventTypeEnum: robotSingleChatMessage,
-		Data: callbackMessageData{
-			CTS:            time.Now().UnixMilli(),
-			FromName:       "alice",
-			FromUID:        10001,
-			MsgID:          1212661773582049280,
-			Message:        `{"text":"hello"}`,
-			ChatID:         20002,
-			ConversationID: "dx-single-20002",
-			Type:           1,
-		},
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	platform, err := New(map[string]any{
+		"ws_url":        wsURL,
+		"client_id":     "test-client",
+		"client_secret": "0123456789abcdef0123456789abcdef",
+		"bot_id":        int64(123),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if err := p.handleCallbackEvent(evt); err != nil {
-		t.Fatalf("first handleCallbackEvent() error = %v", err)
+	agent := &previewAgent{}
+	engine := core.NewEngine("test", agent, []core.Platform{platform}, "", core.LangEnglish)
+	engine.SetStreamPreviewCfg(core.StreamPreviewCfg{
+		Enabled:       true,
+		IntervalMs:    0,
+		MinDeltaChars: 1,
+		MaxChars:      500,
+	})
+
+	if err := engine.Start(); err != nil {
+		t.Fatal(err)
 	}
-	if err := p.handleCallbackEvent(evt); err != nil {
-		t.Fatalf("second handleCallbackEvent() error = %v", err)
+	defer engine.Stop()
+
+	select {
+	case <-msgSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for inbound message")
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
+
+	startFrame := waitForFrameType(t, framesCh, map[string]bool{FrameTypeAgentReplyStart: true}, 2*time.Second)
+	if startFrame.RequestID != "req_stream_1" {
+		t.Fatalf("start requestID = %q, want req_stream_1", startFrame.RequestID)
+	}
+
+	deltaFrame := waitForFrameType(t, framesCh, map[string]bool{FrameTypeAgentReplyDelta: true}, 2*time.Second)
+	var deltaPayload AgentDeltaPayload
+	if err := json.Unmarshal(deltaFrame.Payload, &deltaPayload); err != nil {
+		t.Fatalf("unmarshal delta payload: %v", err)
+	}
+	if deltaPayload.Delta != "bridge-ok" {
+		t.Fatalf("delta text = %q, want bridge-ok", deltaPayload.Delta)
+	}
+
+	terminalFrame := waitForFrameType(t, framesCh, map[string]bool{
+		FrameTypeAgentReplyFinal: true,
+		FrameTypeAgentReplyEnd:   true,
+	}, 2*time.Second)
+	if got := payloadText(t, terminalFrame); got != "bridge-ok" {
+		t.Fatalf("terminal text = %q, want bridge-ok", got)
 	}
 }
 
-func TestHandleCallbackEvent_RejectsWrongBotOrApp(t *testing.T) {
-	p := &Platform{appID: "cli_xxx", botID: 123456}
-	evt := callbackEvent{AppID: "other", BotID: 999, EventTypeEnum: robotSingleChatMessage}
+func TestPlatform_UpdateMessageSendsDeltaWithoutTerminalFrame(t *testing.T) {
+	framesCh := make(chan BridgeFrame, 16)
+	srv := startTestServer(t, nil, framesCh)
+	defer srv.Close()
 
-	err := p.handleCallbackEvent(evt)
-	if err == nil {
-		t.Fatal("handleCallbackEvent() error = nil, want validation error")
-	}
-}
-
-func TestHandleCallbackEvent_RejectsSenderOutsideAllowFrom(t *testing.T) {
-	p := &Platform{appID: "cli_xxx", botID: 123456, allowFrom: "10002"}
-	called := false
-	p.handler = func(_ core.Platform, _ *core.Message) { called = true }
-
-	evt := callbackEvent{
-		AppID:         "cli_xxx",
-		BotID:         123456,
-		EventTypeEnum: robotSingleChatMessage,
-		Data: callbackMessageData{
-			CTS:            time.Now().UnixMilli(),
-			FromName:       "alice",
-			FromUID:        10001,
-			MsgID:          1212661773582049280,
-			Message:        `{"text":"hello"}`,
-			ChatID:         20002,
-			ConversationID: "dx-single-20002",
-			Type:           1,
-		},
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	platform, err := New(map[string]any{
+		"ws_url":        wsURL,
+		"client_id":     "test-client",
+		"client_secret": "0123456789abcdef0123456789abcdef",
+		"bot_id":        int64(123),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if err := p.handleCallbackEvent(evt); err != nil {
-		t.Fatalf("handleCallbackEvent() error = %v", err)
-	}
-	if called {
-		t.Fatal("handler called for sender outside allow_from")
-	}
-}
-
-func TestStart_StartsCallbackServer(t *testing.T) {
-	p := &Platform{
-		appID:        "cli_xxx",
-		appSecret:    "secret",
-		botID:        123456,
-		callbackAddr: "127.0.0.1:0",
-	}
-	handler := func(_ core.Platform, _ *core.Message) {}
-	if err := p.Start(handler); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	t.Cleanup(func() { _ = p.Stop() })
-
-	if p.thriftServer == nil {
-		t.Fatal("Start() did not initialize thriftServer")
-	}
-	if p.callbackListenAddr == "" {
-		t.Fatal("Start() did not record callbackListenAddr")
-	}
-}
-
-func TestStop_ClearsCallbackServer(t *testing.T) {
-	p := &Platform{
-		appID:        "cli_xxx",
-		appSecret:    "secret",
-		botID:        123456,
-		callbackAddr: "127.0.0.1:0",
-	}
+	p := platform.(*Platform)
 	if err := p.Start(func(_ core.Platform, _ *core.Message) {}); err != nil {
-		t.Fatalf("Start() error = %v", err)
+		t.Fatal(err)
 	}
-	if err := p.Stop(); err != nil {
-		t.Fatalf("Stop() error = %v", err)
+	defer p.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+	replyCtx := replyContext{requestID: "req_stream_2", sessionID: "sess_stream_2"}
+	handle, err := p.SendPreviewStart(context.Background(), replyCtx, "he")
+	if err != nil {
+		t.Fatalf("SendPreviewStart: %v", err)
 	}
-	if p.thriftServer != nil {
-		t.Fatal("Stop() did not clear thriftServer")
+	if err := p.UpdateMessage(context.Background(), handle, "hello"); err != nil {
+		t.Fatalf("UpdateMessage: %v", err)
 	}
-	if p.callbackListenAddr != "" {
-		t.Fatal("Stop() did not clear callbackListenAddr")
+
+	_ = waitForFrameType(t, framesCh, map[string]bool{FrameTypeAgentReplyStart: true}, 2*time.Second)
+	firstDelta := waitForFrameType(t, framesCh, map[string]bool{FrameTypeAgentReplyDelta: true}, 2*time.Second)
+	var firstPayload AgentDeltaPayload
+	if err := json.Unmarshal(firstDelta.Payload, &firstPayload); err != nil {
+		t.Fatalf("unmarshal first delta payload: %v", err)
+	}
+	if firstPayload.Delta != "he" {
+		t.Fatalf("first delta text = %q, want he", firstPayload.Delta)
+	}
+
+	secondDelta := waitForFrameType(t, framesCh, map[string]bool{FrameTypeAgentReplyDelta: true}, 2*time.Second)
+	var secondPayload AgentDeltaPayload
+	if err := json.Unmarshal(secondDelta.Payload, &secondPayload); err != nil {
+		t.Fatalf("unmarshal second delta payload: %v", err)
+	}
+	if secondPayload.Delta != "hello" {
+		t.Fatalf("second delta text = %q, want hello", secondPayload.Delta)
+	}
+
+	select {
+	case frame := <-framesCh:
+		if frame.Type == FrameTypeAgentReplyFinal || frame.Type == FrameTypeAgentReplyEnd {
+			t.Fatalf("unexpected terminal frame %q", frame.Type)
+		}
+	case <-time.After(200 * time.Millisecond):
 	}
 }
-
-type stopErrServer struct{}
-
-func (stopErrServer) Stop() error { return errors.New("stop failed") }
-
-func TestStop_ClearsStateEvenWhenServerStopFails(t *testing.T) {
-	p := &Platform{
-		thriftServer:       stopErrServer{},
-		callbackListenAddr: "127.0.0.1:9000",
-	}
-
-	err := p.Stop()
-	if err == nil {
-		t.Fatal("Stop() error = nil, want stop error")
-	}
-	if p.thriftServer != nil {
-		t.Fatal("Stop() did not clear thriftServer after error")
-	}
-	if p.callbackListenAddr != "" {
-		t.Fatal("Stop() did not clear callbackListenAddr after error")
-	}
-}
-
-func TestHandleCallbackEvent_IgnoresOldMessage(t *testing.T) {
-	oldStart := core.StartTime
-	core.StartTime = time.Now()
-	t.Cleanup(func() { core.StartTime = oldStart })
-
-	p := &Platform{appID: "cli_xxx", botID: 123456}
-	called := false
-	p.handler = func(_ core.Platform, _ *core.Message) { called = true }
-
-	evt := callbackEvent{
-		AppID:         "cli_xxx",
-		BotID:         123456,
-		EventTypeEnum: robotSingleChatMessage,
-		Data: callbackMessageData{
-			CTS:            time.Now().Add(-10 * time.Second).UnixMilli(),
-			FromName:       "alice",
-			FromUID:        10001,
-			MsgID:          1212661773582049280,
-			Message:        `{"text":"hello"}`,
-			ChatID:         20002,
-			ConversationID: "dx-single-20002",
-			Type:           1,
-		},
-	}
-
-	if err := p.handleCallbackEvent(evt); err != nil {
-		t.Fatalf("handleCallbackEvent() error = %v", err)
-	}
-	if called {
-		t.Fatal("handler called for old message")
-	}
-}
-

@@ -1,4 +1,4 @@
-package daxiangbridge
+package daxiang
 
 import (
 	"encoding/json"
@@ -24,7 +24,7 @@ func TestNormalizeInboundMessage(t *testing.T) {
 	if msg.SessionKey != "sess_001" {
 		t.Errorf("SessionKey: got %q", msg.SessionKey)
 	}
-	if msg.Platform != "daxiangbridge" {
+	if msg.Platform != "daxiang" {
 		t.Errorf("Platform: got %q", msg.Platform)
 	}
 	if msg.Content != "帮我看下报错" {

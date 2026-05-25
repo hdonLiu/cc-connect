@@ -1,4 +1,4 @@
-package daxiangbridge
+package daxiang
 
 import (
 	"encoding/json"
@@ -16,17 +16,17 @@ type replyContext struct {
 func normalizeInboundMessage(frame BridgeFrame) (*core.Message, error) {
 	var p BridgeEventPayload
 	if err := json.Unmarshal(frame.Payload, &p); err != nil {
-		return nil, fmt.Errorf("daxiangbridge: unmarshal event payload: %w", err)
+		return nil, fmt.Errorf("daxiang: unmarshal event payload: %w", err)
 	}
 	if p.ChatType != "private" {
-		return nil, fmt.Errorf("daxiangbridge: unsupported chatType %q (only private supported)", p.ChatType)
+		return nil, fmt.Errorf("daxiang: unsupported chatType %q (only private supported)", p.ChatType)
 	}
 	if p.Text == "" {
-		return nil, fmt.Errorf("daxiangbridge: empty text message")
+		return nil, fmt.Errorf("daxiang: empty text message")
 	}
 	return &core.Message{
 		SessionKey: frame.SessionID,
-		Platform:   "daxiangbridge",
+		Platform:   "daxiang",
 		MessageID:  p.MessageID,
 		UserID:     p.FromUserID,
 		UserName:   p.FromUserName,

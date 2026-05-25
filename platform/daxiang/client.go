@@ -1,4 +1,4 @@
-package daxiangbridge
+package daxiang
 
 import (
 	"context"
@@ -51,7 +51,7 @@ func (c *wsClient) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Warn("daxiangbridge: connect failed, retrying", "error", err, "backoff", backoff)
+			slog.Warn("daxiang: connect failed, retrying", "error", err, "backoff", backoff)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -72,7 +72,7 @@ func (c *wsClient) run(ctx context.Context) {
 func (c *wsClient) connect(ctx context.Context) error {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, nil)
 	if err != nil {
-		return fmt.Errorf("daxiangbridge: dial %s: %w", c.wsURL, err)
+		return fmt.Errorf("daxiang: dial %s: %w", c.wsURL, err)
 	}
 	c.mu.Lock()
 	c.conn = conn
@@ -86,7 +86,7 @@ func (c *wsClient) connect(ctx context.Context) error {
 
 	regFrame, err := buildRegisterFrame(c.clientID, c.botID, c.hexSecret)
 	if err != nil {
-		return fmt.Errorf("daxiangbridge: build register frame: %w", err)
+		return fmt.Errorf("daxiang: build register frame: %w", err)
 	}
 	if err := c.writeFrame(conn, regFrame); err != nil {
 		return err
@@ -102,7 +102,7 @@ func (c *wsClient) connect(ctx context.Context) error {
 			}
 			var frame BridgeFrame
 			if err := json.Unmarshal(raw, &frame); err != nil {
-				slog.Warn("daxiangbridge: unmarshal frame", "error", err)
+				slog.Warn("daxiang: unmarshal frame", "error", err)
 				continue
 			}
 			if frame.Type == FrameTypeClientRegistered {
@@ -120,8 +120,10 @@ func (c *wsClient) connect(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			conn.WriteMessage(websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err := conn.WriteMessage(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")); err != nil {
+				return err
+			}
 			return nil
 		case frame := <-c.send:
 			if err := c.writeFrame(conn, frame); err != nil {
@@ -141,7 +143,7 @@ func (c *wsClient) Send(frame BridgeFrame) {
 	select {
 	case c.send <- frame:
 	default:
-		slog.Warn("daxiangbridge: send buffer full, dropping frame", "type", frame.Type)
+		slog.Warn("daxiang: send buffer full, dropping frame", "type", frame.Type)
 	}
 }
 

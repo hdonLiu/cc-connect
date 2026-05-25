@@ -1,4 +1,4 @@
-package daxiangbridge
+package daxiang
 
 import "testing"
 

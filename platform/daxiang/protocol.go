@@ -1,4 +1,4 @@
-package daxiangbridge
+package daxiang
 
 import "encoding/json"
 
@@ -41,8 +41,8 @@ type ClientRegisterPayload struct {
 	ClientVersion     string `json:"clientVersion"`
 	StreamCapable     bool   `json:"streamCapable"`
 	PermissionCapable bool   `json:"permissionCapable"`
-	Credential        string `json:"credential"`  // AES-GCM encrypted "clientId:timestamp"
-	Timestamp         int64  `json:"timestamp"`   // epoch millis, must match credential plaintext
+	Credential        string `json:"credential"` // AES-GCM encrypted "clientId:timestamp"
+	Timestamp         int64  `json:"timestamp"`  // epoch millis, must match credential plaintext
 }
 
 type AgentReplyPayload struct {

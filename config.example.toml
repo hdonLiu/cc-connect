@@ -1695,12 +1695,12 @@ app_secret = "your-feishu-app-secret"
 # token = "your-discord-bot-token"
 
 # =============================================================================
-# Daxiang Bridge Platform / 大象桥接平台
-# Requires daxiang-bridge cloud service running at ws_url
+# Daxiang Platform / 大象平台
+# Requires ugc-agent-tools bridge service running at ws_url
 # =============================================================================
 
 # [[projects.platforms]]
-# type = "daxiangbridge"
+# type = "daxiang"
 #
 # [projects.platforms.options]
 # ws_url                = "ws://your-bridge-host/ws"
